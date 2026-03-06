@@ -17,28 +17,19 @@ def detect_yellow_pipeline(frame, hsv_lower, hsv_upper):
         - mask: binary mask for visualization
     """
     height, width = frame.shape[:2]
-    
-    # Convert to HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Create yellow mask
     mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
-    
-    # Clean up noise
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    
-    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if not contours:
         return None, None, None, None, None, mask
     
-    # Get largest contour (pipeline)
     largest = max(contours, key=cv2.contourArea)
     
-    # Filter small detections (noise)
+    
     if cv2.contourArea(largest) < 1000:
         return None, None, None, None, None, mask
     

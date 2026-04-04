@@ -1,7 +1,102 @@
-
 import cv2
 import numpy as np
 import sys
+
+
+class ArUcoDetector:
+    """Detects and tracks ArUco markers on pipeline"""
+    
+    def __init__(self):
+        # Use DICT_ARUCO_ORIGINAL as per TAC 2026 rules
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
+        self.parameters = cv2.aruco.DetectorParameters()
+        
+        # Optimize for underwater detection
+        self.parameters.adaptiveThreshConstant = 7
+        self.parameters.minMarkerPerimeterRate = 0.03
+        self.parameters.maxMarkerPerimeterRate = 4.0
+        
+        
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
+        
+        # Track detected markers
+        self.detected_markers = []  # List in order detected
+        self.marker_positions = {}  # {marker_id: (x, y)}
+        self.confirmation_buffer = {}  # Require multiple detections
+        
+    def detect(self, frame):
+        """
+        Detect ArUco markers in frame
+        
+        Returns:
+            list of newly confirmed marker IDs
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Enhance contrast for underwater
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        
+        # Detect markers (new API)
+        corners, ids, rejected = self.detector.detectMarkers(gray)
+        
+        new_detections = []
+        
+        if ids is not None:
+            for i, marker_id in enumerate(ids.flatten()):
+                # Get marker center
+                corner = corners[i][0]
+                center_x = np.mean(corner[:, 0])
+                center_y = np.mean(corner[:, 1])
+                
+                # Check if this is a new marker (not seen or far from last position)
+                if self._is_new_marker(marker_id, center_x, center_y):
+                    # Add to confirmation buffer
+                    if marker_id not in self.confirmation_buffer:
+                        self.confirmation_buffer[marker_id] = 0
+                    
+                    self.confirmation_buffer[marker_id] += 1
+                    
+                    # Confirm after 3 detections
+                    if self.confirmation_buffer[marker_id] >= 3:
+                        if marker_id not in self.detected_markers:
+                            self.detected_markers.append(marker_id)
+                            self.marker_positions[marker_id] = (center_x, center_y)
+                            new_detections.append(marker_id)
+                            print(f"✓ NEW MARKER CONFIRMED: ID {marker_id}")
+                        
+                        # Clear buffer
+                        del self.confirmation_buffer[marker_id]
+        
+        return new_detections
+    
+    def _is_new_marker(self, marker_id, x, y, min_distance=200):
+        """
+        Check if marker is truly new (prevent duplicates)
+        Min 0.2m spacing ≈ 200 pixels at typical distance
+        """
+        if marker_id not in self.marker_positions:
+            return True
+        
+        prev_x, prev_y = self.marker_positions[marker_id]
+        distance = np.sqrt((x - prev_x)**2 + (y - prev_y)**2)
+        
+        return distance > min_distance
+    
+    def visualize(self, frame):
+        """Draw detected markers on frame"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, rejected = self.detector.detectMarkers(gray)
+        
+        # Draw all currently visible markers
+        if ids is not None:
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+        
+        return frame
+    
+    def get_marker_list(self):
+        """Get ordered list of detected markers"""
+        return self.detected_markers
 
 
 def detect_yellow_pipeline(frame, hsv_lower, hsv_upper):
@@ -17,19 +112,28 @@ def detect_yellow_pipeline(frame, hsv_lower, hsv_upper):
         - mask: binary mask for visualization
     """
     height, width = frame.shape[:2]
+    
+    # Convert to HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # Create yellow mask
     mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
+    
+    # Clean up noise
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    
+    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if not contours:
         return None, None, None, None, None, mask
     
+    # Get largest contour (pipeline)
     largest = max(contours, key=cv2.contourArea)
     
-    
+    # Filter small detections (noise)
     if cv2.contourArea(largest) < 1000:
         return None, None, None, None, None, mask
     
@@ -47,20 +151,16 @@ def detect_yellow_pipeline(frame, hsv_lower, hsv_upper):
     
     # Calculate orientation
     [vx, vy, x, y] = cv2.fitLine(largest, cv2.DIST_L2, 0, 0.01, 0.01)
-    angle = np.arctan2(float(vy[0]), float(vx[0])) * 180 / np.pi  # FIXED LINE
+    angle = np.arctan2(float(vy[0]), float(vx[0])) * 180 / np.pi
     
     return True, (cx, cy), norm_x, norm_y, angle, mask
+
 
 def draw_visualization(frame, detected, centroid, norm_x, norm_y, angle):
     """Draw all visualization overlays"""
     vis = frame.copy()
     height, width = frame.shape[:2]
     
-    # Draw center crosshair (target position)
-    center_color = (0, 255, 255)  # Yellow
-    cv2.line(vis, (width//2, 0), (width//2, height), center_color, 2)
-    cv2.line(vis, (0, height//2), (width, height//2), center_color, 2)
-    cv2.circle(vis, (width//2, height//2), 20, center_color, 2)
     
     if not detected:
         # No pipeline detected
@@ -95,12 +195,14 @@ def draw_visualization(frame, detected, centroid, norm_x, norm_y, angle):
     cv2.rectangle(vis, (5, 5), (400, 220), (0, 0, 0), -1)
     cv2.rectangle(vis, (5, 5), (400, 220), (255, 255, 255), 2)
     
-    # Centroid position
-    cv2.putText(vis, f"Centroid: ({cx}, {cy})", 
+    cv2.putText(vis, "PIPELINE DETECTED", (10, y_pos),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    y_pos += line_height
+
+    cv2.putText(vis, f"Centroid: ({cx}, {cy})",
                (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     y_pos += line_height
-    
-    # Normalized position
+
     color = (0, 255, 0) if abs(norm_x) < 0.1 else (0, 165, 255)
     cv2.putText(vis, f"Normalized X: {norm_x:+.3f}", 
                (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
@@ -175,6 +277,9 @@ def main():
     hsv_lower = np.array([15, 100, 100])  # [H, S, V]
     hsv_upper = np.array([35, 255, 255])
     
+    # Initialize ArUco detector
+    aruco_detector = ArUcoDetector()
+    
     # Create windows
     cv2.namedWindow('Pipeline Detection', cv2.WINDOW_NORMAL)
     cv2.namedWindow('Mask View', cv2.WINDOW_NORMAL)
@@ -217,7 +322,7 @@ def main():
             hsv_lower[2] = cv2.getTrackbarPos('V Min', 'HSV Tuner')
             hsv_upper[2] = cv2.getTrackbarPos('V Max', 'HSV Tuner')
             
-            # Detect pipeline
+            # DETECT PIPELINE
             detected, centroid, norm_x, norm_y, angle, mask = detect_yellow_pipeline(
                 frame, hsv_lower, hsv_upper
             )
@@ -225,17 +330,35 @@ def main():
             if detected:
                 detection_count += 1
             
-            # Visualize
+            # DETECT ARUCO MARKERS
+            new_markers = aruco_detector.detect(frame)
+            
+            # Visualize pipeline
             vis_frame = draw_visualization(frame, detected, centroid, norm_x, norm_y, angle)
+            
+            # Visualize ArUco markers on top
+            vis_frame = aruco_detector.visualize(vis_frame)
+            
+            # Show detected marker list on frame
+            marker_list = aruco_detector.get_marker_list()
+            marker_text = f"Detected Markers: {marker_list}" if marker_list else "Detected Markers: None"
+            
+            # Draw marker list background
+            cv2.rectangle(vis_frame, (5, height - 60), (width - 5, height - 10), (0, 0, 0), -1)
+            cv2.rectangle(vis_frame, (5, height - 60), (width - 5, height - 10), (255, 255, 255), 2)
+            
+            cv2.putText(vis_frame, marker_text, 
+                       (10, height - 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             
             # Add frame counter
             cv2.putText(vis_frame, f"Frame: {frame_count}/{total_frames}", 
-                       (width - 250, height - 20), 
+                       (width - 250, height - 70), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
             if paused:
                 cv2.putText(vis_frame, "PAUSED", 
-                           (width - 150, height - 50), 
+                           (width - 150, height - 90), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
             # Show windows
@@ -262,18 +385,33 @@ def main():
             if ret:
                 frame_count += 1
     
-    # Print statistics
+    # Print final statistics
     if frame_count > 0:
         detection_rate = (detection_count / frame_count) * 100
+        marker_list = aruco_detector.get_marker_list()
+        
         print(f"\n{'='*50}")
-        print(f"Statistics:")
+        print(f"MISSION RESULTS:")
+        print(f"{'='*50}")
+        print(f"Pipeline Detection:")
         print(f"  Frames processed: {frame_count}")
-        print(f"  Detections: {detection_count}")
+        print(f"  Pipeline detections: {detection_count}")
         print(f"  Detection rate: {detection_rate:.1f}%")
+        print(f"\nArUco Markers:")
+        print(f"  Detected Markers (in order): {marker_list}")
+        print(f"  Total unique markers: {len(marker_list)}")
         print(f"\nFinal HSV values:")
         print(f"  Lower: [{hsv_lower[0]}, {hsv_lower[1]}, {hsv_lower[2]}]")
         print(f"  Upper: [{hsv_upper[0]}, {hsv_upper[1]}, {hsv_upper[2]}]")
         print(f"{'='*50}\n")
+        
+        # Save results to file
+        if marker_list:
+            result_string = ','.join(map(str, marker_list))
+            with open('marker_results.txt', 'w') as f:
+                f.write(result_string)
+            print(f"✓ Results saved to: marker_results.txt")
+            print(f"  Marker sequence: {result_string}\n")
     
     cap.release()
     cv2.destroyAllWindows()

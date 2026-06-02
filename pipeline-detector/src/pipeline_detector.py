@@ -99,60 +99,110 @@ class ArUcoDetector:
         return self.detected_markers
 
 
-def detect_yellow_pipeline(frame, hsv_lower, hsv_upper):
+def enhance_underwater(bgr, use_clahe=True, use_specular=True,
+                       use_bilateral=True, spec_v=235, spec_s=40):
     """
-    Detect yellow pipeline in frame
-    
+    Improve image quality for underwater yellow-detection.
+    CLAHE works in LAB space to avoid colour-shift artefacts; specular
+    removal inpaints bright halos that confuse the HSV thresholder;
+    bilateral filter smooths sensor noise while keeping edges sharp.
+    """
+    out = bgr
+
+    if use_clahe:
+        lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+        L, a, b = cv2.split(lab)
+        L = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(L)
+        out = cv2.cvtColor(cv2.merge([L, a, b]), cv2.COLOR_LAB2BGR)
+
+    if use_specular:
+        hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
+        _, S, V = cv2.split(hsv)
+        spec = ((V > spec_v) & (S < spec_s)).astype(np.uint8) * 255
+        spec = cv2.dilate(spec, np.ones((5, 5), np.uint8))
+        if np.count_nonzero(spec) > 0:
+            out = cv2.inpaint(out, spec, 3, cv2.INPAINT_TELEA)
+
+    if use_bilateral:
+        out = cv2.bilateralFilter(out, d=9, sigmaColor=75, sigmaSpace=75)
+
+    return out
+
+
+def detect_yellow_pipeline(frame, hsv_lower, hsv_upper,
+                           preprocess=True,
+                           use_clahe=True, use_specular=True,
+                           use_bilateral=True,
+                           spec_v=235, spec_s=40,
+                           close_k=21):
+    """
+    Detect yellow pipeline in frame.
+
     Returns:
         - detected: bool
         - centroid: (x, y) pixel position
         - normalized_x: -1 (left) to +1 (right), 0 = centered
-        - normalized_y: -1 (top) to +1 (bottom), 0 = centered  
-        - angle: pipeline orientation in degrees
+        - normalized_y: -1 (top) to +1 (bottom), 0 = centered
+        - angle: deviation from vertical in degrees (0 = straight ahead)
         - mask: binary mask for visualization
     """
     height, width = frame.shape[:2]
-    
+
+    if preprocess:
+        proc = enhance_underwater(frame,
+                                  use_clahe=use_clahe,
+                                  use_specular=use_specular,
+                                  use_bilateral=use_bilateral,
+                                  spec_v=spec_v, spec_s=spec_s)
+    else:
+        proc = frame
+
     # Convert to HSV
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
+    hsv = cv2.cvtColor(proc, cv2.COLOR_BGR2HSV)
+
     # Create yellow mask
     mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
-    
-    # Clean up noise
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    
+
+    # Elliptical closing kernel bridges pipeline gaps better than a square
+    close_k = max(3, close_k | 1)  # ensure odd, >=3
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
+    kernel_open = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open)
+
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     if not contours:
         return None, None, None, None, None, mask
-    
+
     # Get largest contour (pipeline)
     largest = max(contours, key=cv2.contourArea)
-    
+
     # Filter small detections (noise)
     if cv2.contourArea(largest) < 1000:
         return None, None, None, None, None, mask
-    
+
     # Calculate centroid
     M = cv2.moments(largest)
     if M["m00"] == 0:
         return None, None, None, None, None, mask
-    
+
     cx = int(M["m10"] / M["m00"])
     cy = int(M["m01"] / M["m00"])
-    
+
     # Normalize to [-1, 1] where 0 = center
-    norm_x = (cx - width/2) / (width/2)
-    norm_y = (cy - height/2) / (height/2)
-    
-    # Calculate orientation
+    norm_x = (cx - width / 2) / (width / 2)
+    norm_y = (cy - height / 2) / (height / 2)
+
+    # Angle as deviation from vertical: 0° = perfectly straight,
+    # positive = tilted right, negative = tilted left
     [vx, vy, x, y] = cv2.fitLine(largest, cv2.DIST_L2, 0, 0.01, 0.01)
-    angle = np.arctan2(float(vy[0]), float(vx[0])) * 180 / np.pi
-    
+    raw = np.arctan2(float(vy[0]), float(vx[0])) * 180 / np.pi
+    angle = 90 - abs(raw)
+    if raw < 0:
+        angle = -angle
+
     return True, (cx, cy), norm_x, norm_y, angle, mask
 
 
@@ -273,18 +323,19 @@ def main():
     print(f"Total Frames: {total_frames}")
     print(f"{'='*50}\n")
     
-    # HSV thresholds for yellow (TUNE THESE!)
-    hsv_lower = np.array([15, 100, 100])  # [H, S, V]
-    hsv_upper = np.array([35, 255, 255])
-    
+    # HSV thresholds tuned for yellow in underwater lighting
+    hsv_lower = np.array([25, 150, 215])  # [H, S, V]
+    hsv_upper = np.array([50, 255, 255])
+
     # Initialize ArUco detector
     aruco_detector = ArUcoDetector()
-    
+
     # Create windows
     cv2.namedWindow('Pipeline Detection', cv2.WINDOW_NORMAL)
     cv2.namedWindow('Mask View', cv2.WINDOW_NORMAL)
+    cv2.namedWindow('Preprocessed', cv2.WINDOW_NORMAL)
     cv2.namedWindow('HSV Tuner', cv2.WINDOW_NORMAL)
-    
+
     # Create trackbars for HSV tuning
     cv2.createTrackbar('H Min', 'HSV Tuner', hsv_lower[0], 180, lambda x: None)
     cv2.createTrackbar('H Max', 'HSV Tuner', hsv_upper[0], 180, lambda x: None)
@@ -292,6 +343,14 @@ def main():
     cv2.createTrackbar('S Max', 'HSV Tuner', hsv_upper[1], 255, lambda x: None)
     cv2.createTrackbar('V Min', 'HSV Tuner', hsv_lower[2], 255, lambda x: None)
     cv2.createTrackbar('V Max', 'HSV Tuner', hsv_upper[2], 255, lambda x: None)
+
+    # Preprocessing toggles + tuning
+    cv2.createTrackbar('CLAHE',     'HSV Tuner', 1,   1,   lambda x: None)
+    cv2.createTrackbar('Specular',  'HSV Tuner', 1,   1,   lambda x: None)
+    cv2.createTrackbar('Bilateral', 'HSV Tuner', 1,   1,   lambda x: None)
+    cv2.createTrackbar('Spec V>',   'HSV Tuner', 235, 255, lambda x: None)
+    cv2.createTrackbar('Spec S<',   'HSV Tuner', 40,  255, lambda x: None)
+    cv2.createTrackbar('Close k',   'HSV Tuner', 21,  51,  lambda x: None)
     
     print("Controls:")
     print("  'q' - Quit")
@@ -321,53 +380,71 @@ def main():
             hsv_upper[1] = cv2.getTrackbarPos('S Max', 'HSV Tuner')
             hsv_lower[2] = cv2.getTrackbarPos('V Min', 'HSV Tuner')
             hsv_upper[2] = cv2.getTrackbarPos('V Max', 'HSV Tuner')
-            
-            # DETECT PIPELINE
+
+            # Read preprocessing toggles
+            use_clahe     = bool(cv2.getTrackbarPos('CLAHE',     'HSV Tuner'))
+            use_specular  = bool(cv2.getTrackbarPos('Specular',  'HSV Tuner'))
+            use_bilateral = bool(cv2.getTrackbarPos('Bilateral', 'HSV Tuner'))
+            spec_v        = cv2.getTrackbarPos('Spec V>',   'HSV Tuner')
+            spec_s        = cv2.getTrackbarPos('Spec S<',   'HSV Tuner')
+            close_k       = cv2.getTrackbarPos('Close k',   'HSV Tuner')
+
+            # Preprocess once so both the display and the detector share it
+            proc = enhance_underwater(frame,
+                                      use_clahe=use_clahe,
+                                      use_specular=use_specular,
+                                      use_bilateral=use_bilateral,
+                                      spec_v=spec_v, spec_s=spec_s)
+
+            # DETECT PIPELINE (preprocess=False — already done above)
             detected, centroid, norm_x, norm_y, angle, mask = detect_yellow_pipeline(
-                frame, hsv_lower, hsv_upper
+                proc, hsv_lower, hsv_upper,
+                preprocess=False,
+                close_k=close_k,
             )
-            
+
             if detected:
                 detection_count += 1
-            
-            # DETECT ARUCO MARKERS
+
+            # DETECT ARUCO MARKERS (ArUco handles its own CLAHE on greyscale)
             new_markers = aruco_detector.detect(frame)
-            
+
             # Visualize pipeline
             vis_frame = draw_visualization(frame, detected, centroid, norm_x, norm_y, angle)
-            
+
             # Visualize ArUco markers on top
             vis_frame = aruco_detector.visualize(vis_frame)
-            
+
             # Show detected marker list on frame
             marker_list = aruco_detector.get_marker_list()
             marker_text = f"Detected Markers: {marker_list}" if marker_list else "Detected Markers: None"
-            
+
             # Draw marker list background
             cv2.rectangle(vis_frame, (5, height - 60), (width - 5, height - 10), (0, 0, 0), -1)
             cv2.rectangle(vis_frame, (5, height - 60), (width - 5, height - 10), (255, 255, 255), 2)
-            
-            cv2.putText(vis_frame, marker_text, 
-                       (10, height - 30), 
+
+            cv2.putText(vis_frame, marker_text,
+                       (10, height - 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-            
+
             # Add frame counter
-            cv2.putText(vis_frame, f"Frame: {frame_count}/{total_frames}", 
-                       (width - 250, height - 70), 
+            cv2.putText(vis_frame, f"Frame: {frame_count}/{total_frames}",
+                       (width - 250, height - 70),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            
+
             if paused:
-                cv2.putText(vis_frame, "PAUSED", 
-                           (width - 150, height - 90), 
+                cv2.putText(vis_frame, "PAUSED",
+                           (width - 150, height - 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            
+
             # Show windows
             cv2.imshow('Pipeline Detection', vis_frame)
             cv2.imshow('Mask View', mask)
-            
+            cv2.imshow('Preprocessed', proc)
+
             # Empty window for tuner (just shows trackbars)
             tuner_display = np.zeros((50, 400, 3), dtype=np.uint8)
-            cv2.putText(tuner_display, "Adjust HSV values above", 
+            cv2.putText(tuner_display, "Adjust HSV values above",
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
             cv2.imshow('HSV Tuner', tuner_display)
         

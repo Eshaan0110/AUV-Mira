@@ -1,6 +1,9 @@
-def main():
-    print("Hello from pipeline-detector!")
+import sys
+import os
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from pipeline_detector import main
 
 if __name__ == "__main__":
     main()

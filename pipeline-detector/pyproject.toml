@@ -11,3 +11,8 @@ dependencies = [
 
 [project.scripts]
 pipeline-detector = "pipeline_detector:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]

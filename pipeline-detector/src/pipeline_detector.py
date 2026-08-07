@@ -296,6 +296,49 @@ def draw_visualization(frame, detected, centroid, norm_x, norm_y, angle):
     return vis
 
 
+def process_frame(frame, aruco_detector, hsv_lower, hsv_upper,
+                  use_clahe=True, use_specular=True, use_bilateral=True,
+                  spec_v=235, spec_s=40, close_k=21):
+    """
+    Run the full per-frame pipeline (preprocess -> detect pipeline ->
+    detect markers -> visualize) with no GUI calls, so it can be driven
+    headlessly (tests, batch processing) as well as from the interactive UI.
+
+    Returns a dict: proc, mask, vis_frame, detected, centroid, norm_x,
+    norm_y, angle, new_markers, marker_list.
+    """
+    proc = enhance_underwater(frame,
+                              use_clahe=use_clahe,
+                              use_specular=use_specular,
+                              use_bilateral=use_bilateral,
+                              spec_v=spec_v, spec_s=spec_s)
+
+    detected, centroid, norm_x, norm_y, angle, mask = detect_yellow_pipeline(
+        proc, hsv_lower, hsv_upper,
+        preprocess=False,
+        close_k=close_k,
+    )
+
+    # ArUco handles its own CLAHE on greyscale, so it gets the raw frame
+    new_markers = aruco_detector.detect(frame)
+
+    vis_frame = draw_visualization(frame, detected, centroid, norm_x, norm_y, angle)
+    vis_frame = aruco_detector.visualize(vis_frame)
+
+    return {
+        "proc": proc,
+        "mask": mask,
+        "vis_frame": vis_frame,
+        "detected": detected,
+        "centroid": centroid,
+        "norm_x": norm_x,
+        "norm_y": norm_y,
+        "angle": angle,
+        "new_markers": new_markers,
+        "marker_list": aruco_detector.get_marker_list(),
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python pipeline_detector.py <video_path>")
@@ -389,34 +432,22 @@ def main():
             spec_s        = cv2.getTrackbarPos('Spec S<',   'HSV Tuner')
             close_k       = cv2.getTrackbarPos('Close k',   'HSV Tuner')
 
-            # Preprocess once so both the display and the detector share it
-            proc = enhance_underwater(frame,
-                                      use_clahe=use_clahe,
-                                      use_specular=use_specular,
-                                      use_bilateral=use_bilateral,
-                                      spec_v=spec_v, spec_s=spec_s)
-
-            # DETECT PIPELINE (preprocess=False — already done above)
-            detected, centroid, norm_x, norm_y, angle, mask = detect_yellow_pipeline(
-                proc, hsv_lower, hsv_upper,
-                preprocess=False,
-                close_k=close_k,
+            result = process_frame(
+                frame, aruco_detector, hsv_lower, hsv_upper,
+                use_clahe=use_clahe, use_specular=use_specular,
+                use_bilateral=use_bilateral,
+                spec_v=spec_v, spec_s=spec_s, close_k=close_k,
             )
+            proc = result["proc"]
+            mask = result["mask"]
+            vis_frame = result["vis_frame"]
+            detected = result["detected"]
 
             if detected:
                 detection_count += 1
 
-            # DETECT ARUCO MARKERS (ArUco handles its own CLAHE on greyscale)
-            new_markers = aruco_detector.detect(frame)
-
-            # Visualize pipeline
-            vis_frame = draw_visualization(frame, detected, centroid, norm_x, norm_y, angle)
-
-            # Visualize ArUco markers on top
-            vis_frame = aruco_detector.visualize(vis_frame)
-
             # Show detected marker list on frame
-            marker_list = aruco_detector.get_marker_list()
+            marker_list = result["marker_list"]
             marker_text = f"Detected Markers: {marker_list}" if marker_list else "Detected Markers: None"
 
             # Draw marker list background

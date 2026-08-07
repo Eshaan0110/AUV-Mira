@@ -6,6 +6,7 @@ from pipeline_detector import (
     ArUcoDetector,
     detect_yellow_pipeline,
     enhance_underwater,
+    process_frame,
 )
 
 YELLOW_BGR = (0, 255, 255)
@@ -164,3 +165,44 @@ class TestArUcoDetector:
         assert bool(detector._is_new_marker(5, 150.0, 100.0)) is False
         assert bool(detector._is_new_marker(5, 400.0, 100.0)) is True
         assert bool(detector._is_new_marker(7, 100.0, 100.0)) is True
+
+
+class TestProcessFrame:
+    def test_runs_full_pipeline_headlessly_and_reports_detection(self):
+        frame = draw_vertical_bar(blank_frame(), center_x=320)
+        detector = ArUcoDetector()
+
+        result = process_frame(frame, detector, HSV_LOWER, HSV_UPPER)
+
+        assert result["detected"] is True
+        assert result["centroid"][0] == pytest.approx(320, abs=3)
+        assert result["mask"].shape == frame.shape[:2]
+        assert result["proc"].shape == frame.shape
+        assert result["vis_frame"].shape == frame.shape
+        assert result["new_markers"] == []
+        assert result["marker_list"] == []
+
+    def test_no_pipeline_still_returns_visualized_frame(self):
+        frame = blank_frame()
+        detector = ArUcoDetector()
+
+        result = process_frame(frame, detector, HSV_LOWER, HSV_UPPER)
+
+        assert result["detected"] is None
+        assert result["centroid"] is None
+        assert result["vis_frame"].shape == frame.shape
+
+    def test_confirmed_marker_surfaces_in_new_markers_and_list(self):
+        frame = blank_frame()
+        detector = ArUcoDetector()
+        corners = [fake_marker_corners(100, 100)]
+        ids = np.array([[5]], dtype=np.int32)
+        detector.detector = FakeArucoBackend(corners, ids)
+
+        for _ in range(2):
+            result = process_frame(frame, detector, HSV_LOWER, HSV_UPPER)
+            assert result["new_markers"] == []
+
+        result = process_frame(frame, detector, HSV_LOWER, HSV_UPPER)
+        assert result["new_markers"] == [5]
+        assert result["marker_list"] == [5]

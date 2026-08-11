@@ -339,13 +339,95 @@ def process_frame(frame, aruco_detector, hsv_lower, hsv_upper,
     }
 
 
+DEFAULT_HSV_LOWER = np.array([25, 150, 215])  # [H, S, V]
+DEFAULT_HSV_UPPER = np.array([50, 255, 255])
+
+
+def run_headless(video_path, hsv_lower=None, hsv_upper=None,
+                 output_video_path=None, results_path="marker_results.txt"):
+    """
+    Run the pipeline over a video with no GUI calls, for onboard/CI use
+    where no display is attached. Optionally writes an annotated copy of
+    the video and a marker-sequence results file.
+
+    Returns a stats dict: frame_count, detection_count, detection_rate,
+    marker_list.
+    """
+    if hsv_lower is None:
+        hsv_lower = DEFAULT_HSV_LOWER
+    if hsv_upper is None:
+        hsv_upper = DEFAULT_HSV_UPPER
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open video {video_path}")
+
+    aruco_detector = ArUcoDetector()
+    writer = None
+    frame_count = 0
+    detection_count = 0
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_count += 1
+
+            result = process_frame(frame, aruco_detector, hsv_lower, hsv_upper)
+            if result["detected"]:
+                detection_count += 1
+
+            if output_video_path:
+                if writer is None:
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                    h, w = frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(output_video_path, fourcc, fps, (w, h))
+                writer.write(result["vis_frame"])
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
+
+    marker_list = aruco_detector.get_marker_list()
+    detection_rate = (detection_count / frame_count * 100) if frame_count else 0.0
+
+    if marker_list and results_path:
+        with open(results_path, "w") as f:
+            f.write(",".join(map(str, marker_list)))
+
+    return {
+        "frame_count": frame_count,
+        "detection_count": detection_count,
+        "detection_rate": detection_rate,
+        "marker_list": marker_list,
+    }
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python pipeline_detector.py <video_path>")
+        print("Usage: python pipeline_detector.py <video_path> [--headless] [output_video]")
         print("Example: python pipeline_detector.py sim_video.mp4")
+        print("Example: python pipeline_detector.py sim_video.mp4 --headless annotated.mp4")
         sys.exit(1)
-    
+
     video_path = sys.argv[1]
+
+    if "--headless" in sys.argv:
+        output_video_path = next(
+            (a for a in sys.argv[2:] if a != "--headless"), None
+        )
+        stats = run_headless(video_path, output_video_path=output_video_path)
+        print(f"\n{'='*50}")
+        print("MISSION RESULTS:")
+        print(f"{'='*50}")
+        print(f"Frames processed: {stats['frame_count']}")
+        print(f"Pipeline detections: {stats['detection_count']}")
+        print(f"Detection rate: {stats['detection_rate']:.1f}%")
+        print(f"Detected Markers (in order): {stats['marker_list']}")
+        print(f"{'='*50}\n")
+        return
     
     # Open video
     cap = cv2.VideoCapture(video_path)
@@ -367,8 +449,8 @@ def main():
     print(f"{'='*50}\n")
     
     # HSV thresholds tuned for yellow in underwater lighting
-    hsv_lower = np.array([25, 150, 215])  # [H, S, V]
-    hsv_upper = np.array([50, 255, 255])
+    hsv_lower = DEFAULT_HSV_LOWER.copy()
+    hsv_upper = DEFAULT_HSV_UPPER.copy()
 
     # Initialize ArUco detector
     aruco_detector = ArUcoDetector()

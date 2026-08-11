@@ -7,6 +7,7 @@ from pipeline_detector import (
     detect_yellow_pipeline,
     enhance_underwater,
     process_frame,
+    run_headless,
 )
 
 YELLOW_BGR = (0, 255, 255)
@@ -206,3 +207,52 @@ class TestProcessFrame:
         result = process_frame(frame, detector, HSV_LOWER, HSV_UPPER)
         assert result["new_markers"] == [5]
         assert result["marker_list"] == [5]
+
+
+def write_synthetic_video(path, num_frames=5, width=320, height=240, center_x=160):
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(path), fourcc, 10.0, (width, height))
+    for _ in range(num_frames):
+        frame = draw_vertical_bar(
+            blank_frame(width, height), center_x=center_x, margin=40
+        )
+        writer.write(frame)
+    writer.release()
+
+
+class TestRunHeadless:
+    def test_reports_stats_with_no_output_video(self, tmp_path):
+        video_path = tmp_path / "in.mp4"
+        write_synthetic_video(video_path)
+
+        stats = run_headless(
+            str(video_path),
+            hsv_lower=HSV_LOWER,
+            hsv_upper=HSV_UPPER,
+            results_path=str(tmp_path / "markers.txt"),
+        )
+
+        assert stats["frame_count"] == 5
+        assert stats["detection_count"] == 5
+        assert stats["detection_rate"] == pytest.approx(100.0)
+        assert stats["marker_list"] == []
+
+    def test_writes_annotated_output_video(self, tmp_path):
+        video_path = tmp_path / "in.mp4"
+        out_path = tmp_path / "out.mp4"
+        write_synthetic_video(video_path)
+
+        run_headless(
+            str(video_path),
+            hsv_lower=HSV_LOWER,
+            hsv_upper=HSV_UPPER,
+            output_video_path=str(out_path),
+            results_path=str(tmp_path / "markers.txt"),
+        )
+
+        assert out_path.exists()
+        assert out_path.stat().st_size > 0
+
+    def test_raises_on_missing_video(self, tmp_path):
+        with pytest.raises(IOError):
+            run_headless(str(tmp_path / "does_not_exist.mp4"))

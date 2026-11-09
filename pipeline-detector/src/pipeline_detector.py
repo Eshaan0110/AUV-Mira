@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import argparse
 import sys
 
 
@@ -344,11 +345,14 @@ DEFAULT_HSV_UPPER = np.array([50, 255, 255])
 
 
 def run_headless(video_path, hsv_lower=None, hsv_upper=None,
-                 output_video_path=None, results_path="marker_results.txt"):
+                 output_video_path=None, results_path="marker_results.txt",
+                 telemetry_path=None):
     """
     Run the pipeline over a video with no GUI calls, for onboard/CI use
     where no display is attached. Optionally writes an annotated copy of
-    the video and a marker-sequence results file.
+    the video, a marker-sequence results file, and a per-frame telemetry
+    CSV (frame, detected, norm_x, norm_y, angle) for offline analysis of
+    the servoing signal.
 
     Returns a stats dict: frame_count, detection_count, detection_rate,
     marker_list.
@@ -364,6 +368,10 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
 
     aruco_detector = ArUcoDetector()
     writer = None
+    telemetry = None
+    if telemetry_path:
+        telemetry = open(telemetry_path, "w", newline="")
+        telemetry.write("frame,detected,norm_x,norm_y,angle\n")
     frame_count = 0
     detection_count = 0
 
@@ -378,6 +386,14 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
             if result["detected"]:
                 detection_count += 1
 
+            if telemetry is not None:
+                if result["detected"]:
+                    telemetry.write(
+                        f"{frame_count},1,{result['norm_x']:.4f},"
+                        f"{result['norm_y']:.4f},{result['angle']:.2f}\n")
+                else:
+                    telemetry.write(f"{frame_count},0,,,\n")
+
             if output_video_path:
                 if writer is None:
                     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -387,6 +403,8 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
                 writer.write(result["vis_frame"])
     finally:
         cap.release()
+        if telemetry is not None:
+            telemetry.close()
         if writer is not None:
             writer.release()
 
@@ -405,20 +423,32 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
     }
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python pipeline_detector.py <video_path> [--headless] [output_video]")
-        print("Example: python pipeline_detector.py sim_video.mp4")
-        print("Example: python pipeline_detector.py sim_video.mp4 --headless annotated.mp4")
-        sys.exit(1)
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="pipeline_detector.py",
+        description="Yellow pipeline + ArUco marker detection over a video.")
+    parser.add_argument("video", help="path to input video")
+    parser.add_argument("--headless", nargs="?", const=True, default=False,
+                        metavar="OUTPUT_VIDEO",
+                        help="run without a display; optionally write an "
+                             "annotated video to OUTPUT_VIDEO")
+    parser.add_argument("--telemetry", metavar="CSV",
+                        help="(headless) write per-frame offset/angle to CSV")
+    parser.add_argument("--results", default="marker_results.txt",
+                        metavar="PATH",
+                        help="(headless) where to write the marker sequence")
+    return parser.parse_args(argv)
 
-    video_path = sys.argv[1]
 
-    if "--headless" in sys.argv:
-        output_video_path = next(
-            (a for a in sys.argv[2:] if a != "--headless"), None
-        )
-        stats = run_headless(video_path, output_video_path=output_video_path)
+def main(argv=None):
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    video_path = args.video
+
+    if args.headless:
+        output_video_path = args.headless if isinstance(args.headless, str) else None
+        stats = run_headless(video_path, output_video_path=output_video_path,
+                             results_path=args.results,
+                             telemetry_path=args.telemetry)
         print(f"\n{'='*50}")
         print("MISSION RESULTS:")
         print(f"{'='*50}")
@@ -428,7 +458,7 @@ def main():
         print(f"Detected Markers (in order): {stats['marker_list']}")
         print(f"{'='*50}\n")
         return
-    
+
     # Open video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

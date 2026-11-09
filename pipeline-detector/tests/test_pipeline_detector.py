@@ -6,6 +6,7 @@ from pipeline_detector import (
     ArUcoDetector,
     detect_yellow_pipeline,
     enhance_underwater,
+    parse_args,
     process_frame,
     run_headless,
 )
@@ -253,6 +254,42 @@ class TestRunHeadless:
         assert out_path.exists()
         assert out_path.stat().st_size > 0
 
+    def test_writes_per_frame_telemetry_csv(self, tmp_path):
+        video_path = tmp_path / "in.mp4"
+        csv_path = tmp_path / "telemetry.csv"
+        write_synthetic_video(video_path)
+
+        run_headless(
+            str(video_path),
+            hsv_lower=HSV_LOWER,
+            hsv_upper=HSV_UPPER,
+            results_path=str(tmp_path / "markers.txt"),
+            telemetry_path=str(csv_path),
+        )
+
+        lines = csv_path.read_text().strip().splitlines()
+        assert lines[0] == "frame,detected,norm_x,norm_y,angle"
+        assert len(lines) == 1 + 5
+        first = lines[1].split(",")
+        assert first[0] == "1" and first[1] == "1"
+        float(first[2]); float(first[3]); float(first[4])
+
     def test_raises_on_missing_video(self, tmp_path):
         with pytest.raises(IOError):
             run_headless(str(tmp_path / "does_not_exist.mp4"))
+
+
+class TestParseArgs:
+    def test_interactive_default(self):
+        args = parse_args(["clip.mp4"])
+        assert args.video == "clip.mp4"
+        assert args.headless is False
+
+    def test_headless_without_output(self):
+        assert parse_args(["clip.mp4", "--headless"]).headless is True
+
+    def test_headless_with_output_and_telemetry(self):
+        args = parse_args(["clip.mp4", "--headless", "out.mp4",
+                           "--telemetry", "t.csv"])
+        assert args.headless == "out.mp4"
+        assert args.telemetry == "t.csv"

@@ -44,6 +44,11 @@ Runs the same detection pipeline with no OpenCV GUI calls. Prints frame
 count, detection rate, and marker sequence to stdout. If `output_video_path`
 is given, writes an annotated copy of the video there.
 
+Optional flags (headless):
+
+- `--telemetry <csv>` - write per-frame `frame,detected,norm_x,norm_y,angle` rows
+- `--results <path>` - where to write the confirmed marker sequence (default `marker_results.txt`)
+
 ## Tests
 
 ```bash

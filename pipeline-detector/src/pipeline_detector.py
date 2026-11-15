@@ -423,6 +423,28 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
     }
 
 
+def resolve_hsv_bounds(lower=None, upper=None):
+    """
+    Turn optional [H, S, V] lists into numpy bounds, falling back to the
+    defaults. Raises ValueError for out-of-range values or lower > upper,
+    so a typo fails fast instead of silently producing an empty mask.
+    """
+    lower = DEFAULT_HSV_LOWER.copy() if lower is None else np.array(lower)
+    upper = DEFAULT_HSV_UPPER.copy() if upper is None else np.array(upper)
+    max_vals = np.array([180, 255, 255])
+    for name, bound in (("lower", lower), ("upper", upper)):
+        if bound.shape != (3,):
+            raise ValueError(f"HSV {name} bound must have 3 values")
+        if (bound < 0).any() or (bound > max_vals).any():
+            raise ValueError(
+                f"HSV {name} bound {bound.tolist()} out of range "
+                "(H 0-180, S 0-255, V 0-255)")
+    if (lower > upper).any():
+        raise ValueError(
+            f"HSV lower {lower.tolist()} exceeds upper {upper.tolist()}")
+    return lower, upper
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="pipeline_detector.py",
@@ -434,6 +456,13 @@ def parse_args(argv):
                              "annotated video to OUTPUT_VIDEO")
     parser.add_argument("--telemetry", metavar="CSV",
                         help="(headless) write per-frame offset/angle to CSV")
+    parser.add_argument("--hsv-lower", nargs=3, type=int,
+                        metavar=("H", "S", "V"),
+                        help="lower HSV bound (default 25 150 215); also the "
+                             "starting point of the interactive trackbars")
+    parser.add_argument("--hsv-upper", nargs=3, type=int,
+                        metavar=("H", "S", "V"),
+                        help="upper HSV bound (default 50 255 255)")
     parser.add_argument("--results", default="marker_results.txt",
                         metavar="PATH",
                         help="(headless) where to write the marker sequence")
@@ -443,10 +472,16 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     video_path = args.video
+    try:
+        hsv_lower, hsv_upper = resolve_hsv_bounds(args.hsv_lower, args.hsv_upper)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(2)
 
     if args.headless:
         output_video_path = args.headless if isinstance(args.headless, str) else None
-        stats = run_headless(video_path, output_video_path=output_video_path,
+        stats = run_headless(video_path, hsv_lower, hsv_upper,
+                             output_video_path=output_video_path,
                              results_path=args.results,
                              telemetry_path=args.telemetry)
         print(f"\n{'='*50}")
@@ -479,8 +514,6 @@ def main(argv=None):
     print(f"{'='*50}\n")
     
     # HSV thresholds tuned for yellow in underwater lighting
-    hsv_lower = DEFAULT_HSV_LOWER.copy()
-    hsv_upper = DEFAULT_HSV_UPPER.copy()
 
     # Initialize ArUco detector
     aruco_detector = ArUcoDetector()

@@ -48,6 +48,7 @@ Optional flags (headless):
 
 - `--telemetry <csv>` - write per-frame `frame,detected,norm_x,norm_y,angle` rows
 - `--results <path>` - where to write the confirmed marker sequence (default `marker_results.txt`)
+- `--hsv-lower H S V` / `--hsv-upper H S V` - override the yellow HSV bounds (defaults `25 150 215` / `50 255 255`); also sets the starting trackbar values in interactive mode
 
 ## Tests
 

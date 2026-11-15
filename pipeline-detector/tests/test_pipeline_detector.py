@@ -7,6 +7,7 @@ from pipeline_detector import (
     detect_yellow_pipeline,
     enhance_underwater,
     parse_args,
+    resolve_hsv_bounds,
     process_frame,
     run_headless,
 )
@@ -293,3 +294,34 @@ class TestParseArgs:
                            "--telemetry", "t.csv"])
         assert args.headless == "out.mp4"
         assert args.telemetry == "t.csv"
+
+
+class TestHsvBounds:
+    def test_defaults(self):
+        lo, hi = resolve_hsv_bounds()
+        assert lo.tolist() == [25, 150, 215]
+        assert hi.tolist() == [50, 255, 255]
+
+    def test_override(self):
+        lo, hi = resolve_hsv_bounds([20, 100, 100], [40, 255, 255])
+        assert lo.tolist() == [20, 100, 100]
+        assert hi.tolist() == [40, 255, 255]
+
+    def test_defaults_not_aliased(self):
+        lo, _ = resolve_hsv_bounds()
+        lo[0] = 0
+        assert resolve_hsv_bounds()[0][0] == 25
+
+    def test_out_of_range_rejected(self):
+        with pytest.raises(ValueError):
+            resolve_hsv_bounds([0, 0, 0], [181, 255, 255])
+
+    def test_lower_above_upper_rejected(self):
+        with pytest.raises(ValueError):
+            resolve_hsv_bounds([60, 0, 0], [50, 255, 255])
+
+    def test_cli_flags_parse(self):
+        args = parse_args(["c.mp4", "--hsv-lower", "20", "90", "100",
+                           "--hsv-upper", "40", "255", "255"])
+        assert args.hsv_lower == [20, 90, 100]
+        assert args.hsv_upper == [40, 255, 255]

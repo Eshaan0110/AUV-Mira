@@ -5,6 +5,7 @@ import pytest
 from pipeline_detector import (
     ArUcoDetector,
     detect_yellow_pipeline,
+    enhance_kwargs_from_args,
     enhance_underwater,
     parse_args,
     resolve_hsv_bounds,
@@ -275,6 +276,24 @@ class TestRunHeadless:
         assert first[0] == "1" and first[1] == "1"
         float(first[2]); float(first[3]); float(first[4])
 
+    def test_forwards_enhancement_options(self, tmp_path, monkeypatch):
+        import pipeline_detector as pd
+        video_path = tmp_path / "in.mp4"
+        write_synthetic_video(video_path)
+        seen = []
+        real = pd.process_frame
+
+        def spy(*a, **kw):
+            seen.append(kw)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(pd, "process_frame", spy)
+        run_headless(str(video_path), hsv_lower=HSV_LOWER, hsv_upper=HSV_UPPER,
+                     results_path=str(tmp_path / "m.txt"),
+                     use_clahe=False, use_bilateral=False, close_k=5)
+        assert seen and all(kw["use_clahe"] is False and kw["close_k"] == 5
+                            for kw in seen)
+
     def test_raises_on_missing_video(self, tmp_path):
         with pytest.raises(IOError):
             run_headless(str(tmp_path / "does_not_exist.mp4"))
@@ -294,6 +313,26 @@ class TestParseArgs:
                            "--telemetry", "t.csv"])
         assert args.headless == "out.mp4"
         assert args.telemetry == "t.csv"
+
+
+class TestEnhancementFlags:
+    def test_defaults_match_process_frame(self):
+        kw = enhance_kwargs_from_args(parse_args(["c.mp4"]))
+        assert kw == dict(use_clahe=True, use_specular=True,
+                          use_bilateral=True, spec_v=235, spec_s=40,
+                          close_k=21)
+
+    def test_flags_map_to_kwargs(self):
+        args = parse_args(["c.mp4", "--no-clahe", "--no-bilateral",
+                           "--spec-v", "250", "--close-k", "9"])
+        kw = enhance_kwargs_from_args(args)
+        assert kw["use_clahe"] is False and kw["use_bilateral"] is False
+        assert kw["use_specular"] is True
+        assert kw["spec_v"] == 250 and kw["close_k"] == 9
+
+    def test_out_of_range_rejected(self):
+        with pytest.raises(SystemExit):
+            parse_args(["c.mp4", "--close-k", "99"])
 
 
 class TestHsvBounds:

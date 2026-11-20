@@ -346,13 +346,16 @@ DEFAULT_HSV_UPPER = np.array([50, 255, 255])
 
 def run_headless(video_path, hsv_lower=None, hsv_upper=None,
                  output_video_path=None, results_path="marker_results.txt",
-                 telemetry_path=None):
+                 telemetry_path=None, **enhance_kwargs):
     """
     Run the pipeline over a video with no GUI calls, for onboard/CI use
     where no display is attached. Optionally writes an annotated copy of
     the video, a marker-sequence results file, and a per-frame telemetry
     CSV (frame, detected, norm_x, norm_y, angle) for offline analysis of
     the servoing signal.
+
+    Extra keyword arguments (use_clahe, use_specular, use_bilateral, spec_v,
+    spec_s, close_k) are forwarded to process_frame.
 
     Returns a stats dict: frame_count, detection_count, detection_rate,
     marker_list.
@@ -382,7 +385,8 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
                 break
             frame_count += 1
 
-            result = process_frame(frame, aruco_detector, hsv_lower, hsv_upper)
+            result = process_frame(frame, aruco_detector, hsv_lower, hsv_upper,
+                                   **enhance_kwargs)
             if result["detected"]:
                 detection_count += 1
 
@@ -463,10 +467,35 @@ def parse_args(argv):
     parser.add_argument("--hsv-upper", nargs=3, type=int,
                         metavar=("H", "S", "V"),
                         help="upper HSV bound (default 50 255 255)")
+    parser.add_argument("--no-clahe", action="store_true",
+                        help="disable CLAHE contrast enhancement")
+    parser.add_argument("--no-specular", action="store_true",
+                        help="disable specular-highlight removal")
+    parser.add_argument("--no-bilateral", action="store_true",
+                        help="disable bilateral noise filtering")
+    parser.add_argument("--spec-v", type=int, default=235, metavar="V",
+                        help="specular V threshold (default 235)")
+    parser.add_argument("--spec-s", type=int, default=40, metavar="S",
+                        help="specular S threshold (default 40)")
+    parser.add_argument("--close-k", type=int, default=21, metavar="K",
+                        help="morphological close kernel size (default 21)")
     parser.add_argument("--results", default="marker_results.txt",
                         metavar="PATH",
                         help="(headless) where to write the marker sequence")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    for name, hi in (("spec_v", 255), ("spec_s", 255), ("close_k", 51)):
+        if not 0 <= getattr(args, name) <= hi:
+            parser.error(f"--{name.replace('_', '-')} must be in 0..{hi}")
+    return args
+
+
+def enhance_kwargs_from_args(args):
+    """Map parsed CLI flags to process_frame's enhancement keyword args."""
+    return dict(use_clahe=not args.no_clahe,
+                use_specular=not args.no_specular,
+                use_bilateral=not args.no_bilateral,
+                spec_v=args.spec_v, spec_s=args.spec_s,
+                close_k=args.close_k)
 
 
 def main(argv=None):
@@ -483,7 +512,8 @@ def main(argv=None):
         stats = run_headless(video_path, hsv_lower, hsv_upper,
                              output_video_path=output_video_path,
                              results_path=args.results,
-                             telemetry_path=args.telemetry)
+                             telemetry_path=args.telemetry,
+                             **enhance_kwargs_from_args(args))
         print(f"\n{'='*50}")
         print("MISSION RESULTS:")
         print(f"{'='*50}")
@@ -533,12 +563,12 @@ def main(argv=None):
     cv2.createTrackbar('V Max', 'HSV Tuner', hsv_upper[2], 255, lambda x: None)
 
     # Preprocessing toggles + tuning
-    cv2.createTrackbar('CLAHE',     'HSV Tuner', 1,   1,   lambda x: None)
-    cv2.createTrackbar('Specular',  'HSV Tuner', 1,   1,   lambda x: None)
-    cv2.createTrackbar('Bilateral', 'HSV Tuner', 1,   1,   lambda x: None)
-    cv2.createTrackbar('Spec V>',   'HSV Tuner', 235, 255, lambda x: None)
-    cv2.createTrackbar('Spec S<',   'HSV Tuner', 40,  255, lambda x: None)
-    cv2.createTrackbar('Close k',   'HSV Tuner', 21,  51,  lambda x: None)
+    cv2.createTrackbar('CLAHE',    'HSV Tuner', int(not args.no_clahe),   1,   lambda x: None)
+    cv2.createTrackbar('Specular', 'HSV Tuner', int(not args.no_specular),   1,   lambda x: None)
+    cv2.createTrackbar('Bilateral','HSV Tuner', int(not args.no_bilateral),   1,   lambda x: None)
+    cv2.createTrackbar('Spec V>',   'HSV Tuner', args.spec_v, 255, lambda x: None)
+    cv2.createTrackbar('Spec S<',   'HSV Tuner', args.spec_s, 255, lambda x: None)
+    cv2.createTrackbar('Close k',   'HSV Tuner', args.close_k, 51,  lambda x: None)
     
     print("Controls:")
     print("  'q' - Quit")

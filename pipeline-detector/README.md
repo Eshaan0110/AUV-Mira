@@ -51,6 +51,8 @@ Optional flags (headless):
 - `--hsv-lower H S V` / `--hsv-upper H S V` - override the yellow HSV bounds (defaults `25 150 215` / `50 255 255`); also sets the starting trackbar values in interactive mode
 - `--no-clahe` / `--no-specular` / `--no-bilateral` - disable individual preprocessing stages
 - `--spec-v V` / `--spec-s S` / `--close-k K` - specular thresholds (default 235/40) and morphological close kernel (default 21); apply to headless runs and seed the interactive trackbars
+- `--clahe-clip C` / `--clahe-tile N` - CLAHE clip limit (default 2.0) and N x N tile grid (default 8)
+- `--bilateral-d D` / `--bilateral-sigma S` - bilateral filter diameter (default 9) and sigma (default 75)
 
 ## Tests
 

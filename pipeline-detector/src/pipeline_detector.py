@@ -101,7 +101,9 @@ class ArUcoDetector:
 
 
 def enhance_underwater(bgr, use_clahe=True, use_specular=True,
-                       use_bilateral=True, spec_v=235, spec_s=40):
+                       use_bilateral=True, spec_v=235, spec_s=40,
+                       clahe_clip=2.0, clahe_tile=8,
+                       bilateral_d=9, bilateral_sigma=75):
     """
     Improve image quality for underwater yellow-detection.
     CLAHE works in LAB space to avoid colour-shift artefacts; specular
@@ -113,7 +115,8 @@ def enhance_underwater(bgr, use_clahe=True, use_specular=True,
     if use_clahe:
         lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
         L, a, b = cv2.split(lab)
-        L = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(L)
+        L = cv2.createCLAHE(clipLimit=clahe_clip,
+                            tileGridSize=(clahe_tile, clahe_tile)).apply(L)
         out = cv2.cvtColor(cv2.merge([L, a, b]), cv2.COLOR_LAB2BGR)
 
     if use_specular:
@@ -125,7 +128,9 @@ def enhance_underwater(bgr, use_clahe=True, use_specular=True,
             out = cv2.inpaint(out, spec, 3, cv2.INPAINT_TELEA)
 
     if use_bilateral:
-        out = cv2.bilateralFilter(out, d=9, sigmaColor=75, sigmaSpace=75)
+        out = cv2.bilateralFilter(out, d=bilateral_d,
+                                  sigmaColor=bilateral_sigma,
+                                  sigmaSpace=bilateral_sigma)
 
     return out
 
@@ -135,7 +140,7 @@ def detect_yellow_pipeline(frame, hsv_lower, hsv_upper,
                            use_clahe=True, use_specular=True,
                            use_bilateral=True,
                            spec_v=235, spec_s=40,
-                           close_k=21):
+                           close_k=21, **enhance_extra):
     """
     Detect yellow pipeline in frame.
 
@@ -154,7 +159,8 @@ def detect_yellow_pipeline(frame, hsv_lower, hsv_upper,
                                   use_clahe=use_clahe,
                                   use_specular=use_specular,
                                   use_bilateral=use_bilateral,
-                                  spec_v=spec_v, spec_s=spec_s)
+                                  spec_v=spec_v, spec_s=spec_s,
+                                  **enhance_extra)
     else:
         proc = frame
 
@@ -299,7 +305,7 @@ def draw_visualization(frame, detected, centroid, norm_x, norm_y, angle):
 
 def process_frame(frame, aruco_detector, hsv_lower, hsv_upper,
                   use_clahe=True, use_specular=True, use_bilateral=True,
-                  spec_v=235, spec_s=40, close_k=21):
+                  spec_v=235, spec_s=40, close_k=21, **enhance_extra):
     """
     Run the full per-frame pipeline (preprocess -> detect pipeline ->
     detect markers -> visualize) with no GUI calls, so it can be driven
@@ -312,7 +318,8 @@ def process_frame(frame, aruco_detector, hsv_lower, hsv_upper,
                               use_clahe=use_clahe,
                               use_specular=use_specular,
                               use_bilateral=use_bilateral,
-                              spec_v=spec_v, spec_s=spec_s)
+                              spec_v=spec_v, spec_s=spec_s,
+                              **enhance_extra)
 
     detected, centroid, norm_x, norm_y, angle, mask = detect_yellow_pipeline(
         proc, hsv_lower, hsv_upper,
@@ -355,7 +362,7 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
     the servoing signal.
 
     Extra keyword arguments (use_clahe, use_specular, use_bilateral, spec_v,
-    spec_s, close_k) are forwarded to process_frame.
+    spec_s, close_k, clahe_clip, clahe_tile, bilateral_d, bilateral_sigma) are forwarded to process_frame.
 
     Returns a stats dict: frame_count, detection_count, detection_rate,
     marker_list.
@@ -479,6 +486,15 @@ def parse_args(argv):
                         help="specular S threshold (default 40)")
     parser.add_argument("--close-k", type=int, default=21, metavar="K",
                         help="morphological close kernel size (default 21)")
+    parser.add_argument("--clahe-clip", type=float, default=2.0, metavar="C",
+                        help="CLAHE clip limit (default 2.0)")
+    parser.add_argument("--clahe-tile", type=int, default=8, metavar="N",
+                        help="CLAHE tile grid is N x N (default 8)")
+    parser.add_argument("--bilateral-d", type=int, default=9, metavar="D",
+                        help="bilateral filter diameter (default 9)")
+    parser.add_argument("--bilateral-sigma", type=float, default=75,
+                        metavar="S",
+                        help="bilateral sigmaColor/sigmaSpace (default 75)")
     parser.add_argument("--results", default="marker_results.txt",
                         metavar="PATH",
                         help="(headless) where to write the marker sequence")
@@ -486,6 +502,14 @@ def parse_args(argv):
     for name, hi in (("spec_v", 255), ("spec_s", 255), ("close_k", 51)):
         if not 0 <= getattr(args, name) <= hi:
             parser.error(f"--{name.replace('_', '-')} must be in 0..{hi}")
+    if args.clahe_clip <= 0:
+        parser.error("--clahe-clip must be > 0")
+    if not 1 <= args.clahe_tile <= 64:
+        parser.error("--clahe-tile must be in 1..64")
+    if not 1 <= args.bilateral_d <= 25:
+        parser.error("--bilateral-d must be in 1..25")
+    if args.bilateral_sigma <= 0:
+        parser.error("--bilateral-sigma must be > 0")
     return args
 
 
@@ -495,7 +519,10 @@ def enhance_kwargs_from_args(args):
                 use_specular=not args.no_specular,
                 use_bilateral=not args.no_bilateral,
                 spec_v=args.spec_v, spec_s=args.spec_s,
-                close_k=args.close_k)
+                close_k=args.close_k,
+                clahe_clip=args.clahe_clip, clahe_tile=args.clahe_tile,
+                bilateral_d=args.bilateral_d,
+                bilateral_sigma=args.bilateral_sigma)
 
 
 def main(argv=None):
@@ -612,6 +639,9 @@ def main(argv=None):
                 use_clahe=use_clahe, use_specular=use_specular,
                 use_bilateral=use_bilateral,
                 spec_v=spec_v, spec_s=spec_s, close_k=close_k,
+                clahe_clip=args.clahe_clip, clahe_tile=args.clahe_tile,
+                bilateral_d=args.bilateral_d,
+                bilateral_sigma=args.bilateral_sigma,
             )
             proc = result["proc"]
             mask = result["mask"]

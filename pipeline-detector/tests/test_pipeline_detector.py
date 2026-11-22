@@ -320,7 +320,8 @@ class TestEnhancementFlags:
         kw = enhance_kwargs_from_args(parse_args(["c.mp4"]))
         assert kw == dict(use_clahe=True, use_specular=True,
                           use_bilateral=True, spec_v=235, spec_s=40,
-                          close_k=21)
+                          close_k=21, clahe_clip=2.0, clahe_tile=8,
+                          bilateral_d=9, bilateral_sigma=75)
 
     def test_flags_map_to_kwargs(self):
         args = parse_args(["c.mp4", "--no-clahe", "--no-bilateral",
@@ -364,3 +365,35 @@ class TestHsvBounds:
                            "--hsv-upper", "40", "255", "255"])
         assert args.hsv_lower == [20, 90, 100]
         assert args.hsv_upper == [40, 255, 255]
+
+
+class TestFilterParams:
+    def test_flags_map_to_kwargs(self):
+        kw = enhance_kwargs_from_args(parse_args(
+            ["c.mp4", "--clahe-clip", "4.5", "--clahe-tile", "4",
+             "--bilateral-d", "5", "--bilateral-sigma", "40"]))
+        assert kw["clahe_clip"] == 4.5 and kw["clahe_tile"] == 4
+        assert kw["bilateral_d"] == 5 and kw["bilateral_sigma"] == 40
+
+    @pytest.mark.parametrize("flag,val", [
+        ("--clahe-clip", "0"), ("--clahe-tile", "0"),
+        ("--clahe-tile", "100"), ("--bilateral-d", "0"),
+        ("--bilateral-sigma", "-1")])
+    def test_out_of_range_rejected(self, flag, val):
+        with pytest.raises(SystemExit):
+            parse_args(["c.mp4", flag, val])
+
+    def test_clahe_clip_changes_output(self):
+        rng = np.random.default_rng(0)
+        img = rng.integers(80, 120, (64, 64, 3), dtype=np.uint8)
+        kw = dict(use_specular=False, use_bilateral=False)
+        weak = enhance_underwater(img, clahe_clip=1.0, **kw)
+        strong = enhance_underwater(img, clahe_clip=8.0, **kw)
+        assert not np.array_equal(weak, strong)
+
+    def test_params_forwarded_through_process_frame(self):
+        frame = np.zeros((48, 64, 3), np.uint8)
+        res = process_frame(frame, ArUcoDetector(), np.array([25, 150, 215]),
+                            np.array([50, 255, 255]), clahe_clip=3.0,
+                            clahe_tile=4, bilateral_d=5, bilateral_sigma=30)
+        assert res["proc"].shape == frame.shape

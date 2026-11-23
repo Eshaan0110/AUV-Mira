@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import argparse
+import json
+import socket
 import sys
 
 
@@ -347,19 +349,44 @@ def process_frame(frame, aruco_detector, hsv_lower, hsv_upper,
     }
 
 
+def parse_udp_target(text):
+    """Parse 'HOST:PORT' into (host, port). Raises ValueError if malformed."""
+    host, sep, port = text.rpartition(":")
+    if not sep or not host:
+        raise ValueError(f"UDP target {text!r} must look like HOST:PORT")
+    try:
+        port = int(port)
+    except ValueError:
+        raise ValueError(f"UDP port in {text!r} is not an integer")
+    if not 1 <= port <= 65535:
+        raise ValueError(f"UDP port {port} out of range 1..65535")
+    return host, port
+
+
+def make_offset_message(frame_idx, result):
+    """Serialise one frame's servoing signal as a compact JSON datagram."""
+    msg = {"frame": frame_idx, "detected": bool(result["detected"])}
+    if result["detected"]:
+        msg["norm_x"] = round(float(result["norm_x"]), 4)
+        msg["norm_y"] = round(float(result["norm_y"]), 4)
+        msg["angle"] = round(float(result["angle"]), 2)
+    return json.dumps(msg, separators=(",", ":")).encode()
+
+
 DEFAULT_HSV_LOWER = np.array([25, 150, 215])  # [H, S, V]
 DEFAULT_HSV_UPPER = np.array([50, 255, 255])
 
 
 def run_headless(video_path, hsv_lower=None, hsv_upper=None,
                  output_video_path=None, results_path="marker_results.txt",
-                 telemetry_path=None, **enhance_kwargs):
+                 telemetry_path=None, udp_target=None, **enhance_kwargs):
     """
     Run the pipeline over a video with no GUI calls, for onboard/CI use
     where no display is attached. Optionally writes an annotated copy of
     the video, a marker-sequence results file, and a per-frame telemetry
     CSV (frame, detected, norm_x, norm_y, angle) for offline analysis of
-    the servoing signal.
+    the servoing signal. If udp_target is a (host, port) tuple, each frame's
+    offset is also sent as a JSON datagram so a controller can servo on it.
 
     Extra keyword arguments (use_clahe, use_specular, use_bilateral, spec_v,
     spec_s, close_k, clahe_clip, clahe_tile, bilateral_d, bilateral_sigma) are forwarded to process_frame.
@@ -379,6 +406,9 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
     aruco_detector = ArUcoDetector()
     writer = None
     telemetry = None
+    sock = None
+    if udp_target:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     if telemetry_path:
         telemetry = open(telemetry_path, "w", newline="")
         telemetry.write("frame,detected,norm_x,norm_y,angle\n")
@@ -405,6 +435,9 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
                 else:
                     telemetry.write(f"{frame_count},0,,,\n")
 
+            if sock is not None:
+                sock.sendto(make_offset_message(frame_count, result), udp_target)
+
             if output_video_path:
                 if writer is None:
                     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -414,6 +447,8 @@ def run_headless(video_path, hsv_lower=None, hsv_upper=None,
                 writer.write(result["vis_frame"])
     finally:
         cap.release()
+        if sock is not None:
+            sock.close()
         if telemetry is not None:
             telemetry.close()
         if writer is not None:
@@ -467,6 +502,9 @@ def parse_args(argv):
                              "annotated video to OUTPUT_VIDEO")
     parser.add_argument("--telemetry", metavar="CSV",
                         help="(headless) write per-frame offset/angle to CSV")
+    parser.add_argument("--udp", metavar="HOST:PORT",
+                        help="(headless) send each frame's offset/angle as a "
+                             "JSON UDP datagram to HOST:PORT")
     parser.add_argument("--hsv-lower", nargs=3, type=int,
                         metavar=("H", "S", "V"),
                         help="lower HSV bound (default 25 150 215); also the "
@@ -502,6 +540,12 @@ def parse_args(argv):
     for name, hi in (("spec_v", 255), ("spec_s", 255), ("close_k", 51)):
         if not 0 <= getattr(args, name) <= hi:
             parser.error(f"--{name.replace('_', '-')} must be in 0..{hi}")
+    args.udp_target = None
+    if args.udp:
+        try:
+            args.udp_target = parse_udp_target(args.udp)
+        except ValueError as e:
+            parser.error(str(e))
     if args.clahe_clip <= 0:
         parser.error("--clahe-clip must be > 0")
     if not 1 <= args.clahe_tile <= 64:
@@ -540,6 +584,7 @@ def main(argv=None):
                              output_video_path=output_video_path,
                              results_path=args.results,
                              telemetry_path=args.telemetry,
+                             udp_target=args.udp_target,
                              **enhance_kwargs_from_args(args))
         print(f"\n{'='*50}")
         print("MISSION RESULTS:")

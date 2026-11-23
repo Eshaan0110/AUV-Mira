@@ -47,6 +47,7 @@ is given, writes an annotated copy of the video there.
 Optional flags (headless):
 
 - `--telemetry <csv>` - write per-frame `frame,detected,norm_x,norm_y,angle` rows
+- `--udp HOST:PORT` - send each frame's `{frame,detected,norm_x,norm_y,angle}` as a JSON UDP datagram (offsets omitted when no pipeline is found) for an external controller
 - `--results <path>` - where to write the confirmed marker sequence (default `marker_results.txt`)
 - `--hsv-lower H S V` / `--hsv-upper H S V` - override the yellow HSV bounds (defaults `25 150 215` / `50 255 255`); also sets the starting trackbar values in interactive mode
 - `--no-clahe` / `--no-specular` / `--no-bilateral` - disable individual preprocessing stages

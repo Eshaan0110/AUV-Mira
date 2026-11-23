@@ -7,6 +7,8 @@ from pipeline_detector import (
     detect_yellow_pipeline,
     enhance_kwargs_from_args,
     enhance_underwater,
+    make_offset_message,
+    parse_udp_target,
     parse_args,
     resolve_hsv_bounds,
     process_frame,
@@ -397,3 +399,41 @@ class TestFilterParams:
                             np.array([50, 255, 255]), clahe_clip=3.0,
                             clahe_tile=4, bilateral_d=5, bilateral_sigma=30)
         assert res["proc"].shape == frame.shape
+
+
+class TestUdpOutput:
+    def test_parse_udp_target(self):
+        assert parse_udp_target("127.0.0.1:9000") == ("127.0.0.1", 9000)
+
+    @pytest.mark.parametrize("bad", ["localhost", ":9000", "h:abc", "h:0", "h:70000"])
+    def test_parse_udp_target_rejects_bad(self, bad):
+        with pytest.raises(ValueError):
+            parse_udp_target(bad)
+
+    def test_parse_args_rejects_bad_udp(self):
+        with pytest.raises(SystemExit):
+            parse_args(["v.mp4", "--udp", "nonsense"])
+
+    def test_parse_args_sets_udp_target(self):
+        assert parse_args(["v.mp4", "--udp", "h:5"]).udp_target == ("h", 5)
+
+    def test_message_undetected_has_no_offsets(self):
+        import json
+        msg = json.loads(make_offset_message(3, {"detected": False}))
+        assert msg == {"frame": 3, "detected": False}
+
+    def test_headless_sends_one_datagram_per_frame(self, tmp_path):
+        import json, socket
+        rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        rx.bind(("127.0.0.1", 0))
+        rx.settimeout(2)
+        video_path = tmp_path / "in.mp4"
+        write_synthetic_video(video_path)
+        run_headless(str(video_path), hsv_lower=HSV_LOWER, hsv_upper=HSV_UPPER,
+                     results_path=str(tmp_path / "m.txt"),
+                     udp_target=("127.0.0.1", rx.getsockname()[1]))
+        msgs = [json.loads(rx.recv(1024)) for _ in range(5)]
+        rx.close()
+        assert [m["frame"] for m in msgs] == [1, 2, 3, 4, 5]
+        assert msgs[0]["detected"] is True
+        assert {"norm_x", "norm_y", "angle"} <= msgs[0].keys()

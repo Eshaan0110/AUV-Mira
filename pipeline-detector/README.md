@@ -55,6 +55,8 @@ Optional flags (headless):
 - `--clahe-clip C` / `--clahe-tile N` - CLAHE clip limit (default 2.0) and N x N tile grid (default 8)
 - `--bilateral-d D` / `--bilateral-sigma S` - bilateral filter diameter (default 9) and sigma (default 75)
 
+The interactive tuner also has sliders for CLAHE clip (x10), CLAHE tile, bilateral diameter and sigma. When you quit, it prints the final settings as a ready-to-paste set of CLI flags (`--hsv-lower ... --bilateral-sigma ...`) for headless runs.
+
 ## Tests
 
 ```bash

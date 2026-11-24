@@ -7,11 +7,13 @@ from pipeline_detector import (
     detect_yellow_pipeline,
     enhance_kwargs_from_args,
     enhance_underwater,
+    format_tuned_flags,
     make_offset_message,
     parse_udp_target,
     parse_args,
     resolve_hsv_bounds,
     process_frame,
+    read_tuner_state,
     run_headless,
 )
 
@@ -437,3 +439,47 @@ class TestUdpOutput:
         assert [m["frame"] for m in msgs] == [1, 2, 3, 4, 5]
         assert msgs[0]["detected"] is True
         assert {"norm_x", "norm_y", "angle"} <= msgs[0].keys()
+
+
+class TestTuner:
+    VALUES = {
+        'H Min': 20, 'H Max': 40, 'S Min': 100, 'S Max': 255,
+        'V Min': 200, 'V Max': 255, 'CLAHE': 1, 'Specular': 0,
+        'Bilateral': 1, 'Spec V>': 230, 'Spec S<': 30, 'Close k': 15,
+        'CLAHE clip x10': 35, 'CLAHE tile': 4, 'Bilat d': 7,
+        'Bilat sigma': 50,
+    }
+
+    def _read(self, **over):
+        vals = {**self.VALUES, **over}
+        return read_tuner_state(lambda name, win: vals[name])
+
+    def test_reads_bounds_and_settings(self):
+        lower, upper, kw = self._read()
+        assert lower.tolist() == [20, 100, 200]
+        assert upper.tolist() == [40, 255, 255]
+        assert kw["use_specular"] is False and kw["use_clahe"] is True
+        assert kw["clahe_clip"] == 3.5 and kw["clahe_tile"] == 4
+
+    def test_zero_trackbars_are_clamped(self):
+        _, _, kw = self._read(**{'Close k': 0, 'CLAHE clip x10': 0,
+                                 'CLAHE tile': 0, 'Bilat d': 0,
+                                 'Bilat sigma': 0})
+        assert kw["close_k"] == 1 and kw["clahe_tile"] == 1
+        assert kw["clahe_clip"] == 0.1 and kw["bilateral_d"] == 1
+        assert kw["bilateral_sigma"] == 1
+
+    def test_clamped_state_runs_through_enhancer(self):
+        _, _, kw = self._read(**{'CLAHE tile': 0, 'Bilat d': 0})
+        frame = np.full((40, 40, 3), 90, np.uint8)
+        kw.pop("close_k")
+        assert enhance_underwater(frame, **kw).shape == frame.shape
+
+    def test_format_flags_round_trip_through_parse_args(self):
+        lower, upper, kw = self._read()
+        text = format_tuned_flags(lower, upper, kw)
+        args = parse_args(["v.mp4"] + text.split())
+        assert args.hsv_lower == [20, 100, 200]
+        assert args.hsv_upper == [40, 255, 255]
+        assert args.no_specular and not args.no_clahe
+        assert enhance_kwargs_from_args(args) == kw

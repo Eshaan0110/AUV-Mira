@@ -569,6 +569,57 @@ def enhance_kwargs_from_args(args):
                 bilateral_sigma=args.bilateral_sigma)
 
 
+TUNER_WINDOW = 'HSV Tuner'
+
+
+def read_tuner_state(get_pos, window=TUNER_WINDOW):
+    """
+    Read every interactive trackbar through get_pos(name, window) and return
+    (hsv_lower, hsv_upper, enhance_kwargs). Values are clamped to what the
+    OpenCV filters accept (a trackbar can sit at 0, which would make a zero
+    sized kernel/tile), and CLAHE clip is stored in tenths on its trackbar.
+    """
+    def pos(name):
+        return int(get_pos(name, window))
+
+    lower = np.array([pos('H Min'), pos('S Min'), pos('V Min')])
+    upper = np.array([pos('H Max'), pos('S Max'), pos('V Max')])
+    kwargs = dict(
+        use_clahe=bool(pos('CLAHE')),
+        use_specular=bool(pos('Specular')),
+        use_bilateral=bool(pos('Bilateral')),
+        spec_v=pos('Spec V>'), spec_s=pos('Spec S<'),
+        close_k=max(1, pos('Close k')),
+        clahe_clip=max(1, pos('CLAHE clip x10')) / 10.0,
+        clahe_tile=max(1, pos('CLAHE tile')),
+        bilateral_d=max(1, pos('Bilat d')),
+        bilateral_sigma=max(1, pos('Bilat sigma')),
+    )
+    return lower, upper, kwargs
+
+
+def format_tuned_flags(hsv_lower, hsv_upper, enhance_kwargs):
+    """
+    Render tuned settings as CLI flags, so values found in the interactive
+    tuner can be pasted straight into a headless/onboard run.
+    """
+    k = enhance_kwargs
+    parts = ["--hsv-lower", *map(str, (int(v) for v in hsv_lower)),
+             "--hsv-upper", *map(str, (int(v) for v in hsv_upper))]
+    for flag, key in (("--no-clahe", "use_clahe"),
+                      ("--no-specular", "use_specular"),
+                      ("--no-bilateral", "use_bilateral")):
+        if not k[key]:
+            parts.append(flag)
+    parts += ["--spec-v", str(k["spec_v"]), "--spec-s", str(k["spec_s"]),
+              "--close-k", str(k["close_k"]),
+              "--clahe-clip", f"{k['clahe_clip']:g}",
+              "--clahe-tile", str(k["clahe_tile"]),
+              "--bilateral-d", str(k["bilateral_d"]),
+              "--bilateral-sigma", f"{k['bilateral_sigma']:g}"]
+    return " ".join(parts)
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     video_path = args.video
@@ -641,6 +692,10 @@ def main(argv=None):
     cv2.createTrackbar('Spec V>',   'HSV Tuner', args.spec_v, 255, lambda x: None)
     cv2.createTrackbar('Spec S<',   'HSV Tuner', args.spec_s, 255, lambda x: None)
     cv2.createTrackbar('Close k',   'HSV Tuner', args.close_k, 51,  lambda x: None)
+    cv2.createTrackbar('CLAHE clip x10', 'HSV Tuner', int(round(args.clahe_clip * 10)), 100, lambda x: None)
+    cv2.createTrackbar('CLAHE tile', 'HSV Tuner', args.clahe_tile, 64, lambda x: None)
+    cv2.createTrackbar('Bilat d',   'HSV Tuner', args.bilateral_d, 25, lambda x: None)
+    cv2.createTrackbar('Bilat sigma', 'HSV Tuner', int(round(args.bilateral_sigma)), 250, lambda x: None)
     
     print("Controls:")
     print("  'q' - Quit")
@@ -663,31 +718,12 @@ def main(argv=None):
             ret = True
         
         if ret and frame is not None:
-            # Get current HSV values from trackbars
-            hsv_lower[0] = cv2.getTrackbarPos('H Min', 'HSV Tuner')
-            hsv_upper[0] = cv2.getTrackbarPos('H Max', 'HSV Tuner')
-            hsv_lower[1] = cv2.getTrackbarPos('S Min', 'HSV Tuner')
-            hsv_upper[1] = cv2.getTrackbarPos('S Max', 'HSV Tuner')
-            hsv_lower[2] = cv2.getTrackbarPos('V Min', 'HSV Tuner')
-            hsv_upper[2] = cv2.getTrackbarPos('V Max', 'HSV Tuner')
+            # Pull current HSV bounds and preprocessing settings from trackbars
+            hsv_lower, hsv_upper, enhance_kwargs = read_tuner_state(
+                cv2.getTrackbarPos)
 
-            # Read preprocessing toggles
-            use_clahe     = bool(cv2.getTrackbarPos('CLAHE',     'HSV Tuner'))
-            use_specular  = bool(cv2.getTrackbarPos('Specular',  'HSV Tuner'))
-            use_bilateral = bool(cv2.getTrackbarPos('Bilateral', 'HSV Tuner'))
-            spec_v        = cv2.getTrackbarPos('Spec V>',   'HSV Tuner')
-            spec_s        = cv2.getTrackbarPos('Spec S<',   'HSV Tuner')
-            close_k       = cv2.getTrackbarPos('Close k',   'HSV Tuner')
-
-            result = process_frame(
-                frame, aruco_detector, hsv_lower, hsv_upper,
-                use_clahe=use_clahe, use_specular=use_specular,
-                use_bilateral=use_bilateral,
-                spec_v=spec_v, spec_s=spec_s, close_k=close_k,
-                clahe_clip=args.clahe_clip, clahe_tile=args.clahe_tile,
-                bilateral_d=args.bilateral_d,
-                bilateral_sigma=args.bilateral_sigma,
-            )
+            result = process_frame(frame, aruco_detector,
+                                   hsv_lower, hsv_upper, **enhance_kwargs)
             proc = result["proc"]
             mask = result["mask"]
             vis_frame = result["vis_frame"]
@@ -763,6 +799,9 @@ def main(argv=None):
         print(f"  Upper: [{hsv_upper[0]}, {hsv_upper[1]}, {hsv_upper[2]}]")
         print(f"{'='*50}\n")
         
+        print("Tuned settings as CLI flags:")
+        print("  " + format_tuned_flags(hsv_lower, hsv_upper, enhance_kwargs) + "\n")
+
         # Save results to file
         if marker_list:
             result_string = ','.join(map(str, marker_list))

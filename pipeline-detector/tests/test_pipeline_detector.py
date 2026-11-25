@@ -2,12 +2,15 @@ import numpy as np
 import cv2
 import pytest
 
+import pipeline_detector
+
 from pipeline_detector import (
     ArUcoDetector,
     detect_yellow_pipeline,
     enhance_kwargs_from_args,
     enhance_underwater,
     format_tuned_flags,
+    interpret_key,
     make_offset_message,
     parse_udp_target,
     parse_args,
@@ -483,3 +486,42 @@ class TestTuner:
         assert args.hsv_upper == [40, 255, 255]
         assert args.no_specular and not args.no_clahe
         assert enhance_kwargs_from_args(args) == kw
+
+
+class TestInterpretKey:
+    def test_quit_and_pause_keys(self):
+        assert interpret_key(ord("q"), False) == "quit"
+        assert interpret_key(ord("p"), True) == "toggle_pause"
+
+    def test_space_steps_only_when_paused(self):
+        assert interpret_key(ord(" "), True) == "step"
+        assert interpret_key(ord(" "), False) is None
+
+    def test_unknown_key_is_ignored(self):
+        assert interpret_key(ord("z"), True) is None
+
+
+class TestInteractiveLoop:
+    def _run(self, monkeypatch, tmp_path, keys, capsys):
+        video = tmp_path / "in.mp4"
+        write_synthetic_video(video, num_frames=5)
+        key_iter = iter(keys)
+        for name in ("namedWindow", "imshow", "createTrackbar"):
+            monkeypatch.setattr(cv2, name, lambda *a, **k: None)
+        monkeypatch.setattr(cv2, "getTrackbarPos", lambda name, win: {
+            "H Min": 20, "H Max": 40, "S Min": 100, "S Max": 255,
+            "V Min": 100, "V Max": 255, "CLAHE": 0, "Specular": 0,
+            "Bilateral": 0, "Spec V>": 200, "Spec S<": 60, "Close k": 5,
+            "CLAHE clip x10": 20, "CLAHE tile": 8, "Bilat d": 9,
+            "Bilat sigma": 75}[name])
+        monkeypatch.setattr(cv2, "waitKey", lambda delay: next(key_iter, ord("q")))
+        monkeypatch.chdir(tmp_path)
+        pipeline_detector.main([str(video), "--no-clahe"])
+        return capsys.readouterr().out
+
+    def test_paused_redraws_do_not_inflate_counts(self, monkeypatch, tmp_path, capsys):
+        # Pause on frame 1, press unrelated keys (redraws), then quit.
+        out = self._run(monkeypatch, tmp_path,
+                        [ord("p"), ord("x"), ord("x"), ord("q")], capsys)
+        assert "Frames processed: 1" in out
+        assert "Pipeline detections: 1" in out

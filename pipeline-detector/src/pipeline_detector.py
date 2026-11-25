@@ -620,6 +620,21 @@ def format_tuned_flags(hsv_lower, hsv_upper, enhance_kwargs):
     return " ".join(parts)
 
 
+def interpret_key(key, paused):
+    """Map a cv2.waitKey code to a playback action.
+
+    Returns "quit", "toggle_pause", "step" or None. Stepping only applies
+    while paused.
+    """
+    if key == ord('q'):
+        return "quit"
+    if key == ord('p'):
+        return "toggle_pause"
+    if key == ord(' ') and paused:
+        return "step"
+    return None
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     video_path = args.video
@@ -706,7 +721,9 @@ def main(argv=None):
     paused = False
     frame_count = 0
     detection_count = 0
-    
+    new_frame = False
+    frame = None
+
     while True:
         if not paused:
             ret, frame = cap.read()
@@ -714,6 +731,7 @@ def main(argv=None):
                 print("\nEnd of video")
                 break
             frame_count += 1
+            new_frame = True
         else:
             ret = True
         
@@ -729,8 +747,10 @@ def main(argv=None):
             vis_frame = result["vis_frame"]
             detected = result["detected"]
 
-            if detected:
+            # Redrawing a paused frame must not inflate the stats
+            if detected and new_frame:
                 detection_count += 1
+            new_frame = False
 
             # Show detected marker list on frame
             marker_list = result["marker_list"]
@@ -768,16 +788,19 @@ def main(argv=None):
         # Handle keyboard
         key = cv2.waitKey(1 if not paused else 0) & 0xFF
         
-        if key == ord('q'):
+        action = interpret_key(key, paused)
+        if action == "quit":
             break
-        elif key == ord('p'):
+        elif action == "toggle_pause":
             paused = not paused
             print(f"{'Paused' if paused else 'Resumed'}")
-        elif key == ord(' ') and paused:
+        elif action == "step":
             # Step one frame forward
-            ret, frame = cap.read()
+            ret, nxt = cap.read()
             if ret:
+                frame = nxt
                 frame_count += 1
+                new_frame = True
     
     # Print final statistics
     if frame_count > 0:
